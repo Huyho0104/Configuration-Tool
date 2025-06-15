@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Angle Sensor Calibration Tool</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/png" href="favicon.ico">
+    <link rel="stylesheet" type="text/css" href="style.css">
+    <meta charset="UTF-8">
+</head>
+
+<body>
+    <div class="topnav">
+        <h1>Angle Sensor Calibration Tool</h1>
+    </div>
+    <div class="content">
+        <div class="card-grid">
+            <div class="card">
+                <p>
+                    <button id="connectBleButton" class="connectButton"> Connect to BLE Device</button>
+                    <button id="disconnectBleButton" class="disconnectButton"> Disconnect BLE Device</button>
+                </p>
+                <p class="gray-label">BLE state: <strong><span id="bleState" style="color:#d13a30;">Disconnected</span></strong></p>
+            </div>
+        </div>
+        <div class="card-grid">
+            <div class="card">
+                <br>
+                <div class="form-row">
+                    <label for="baudrateSelect">Baudrate:</label>
+                    <select id="baudrateSelect">
+                    <option value="1200">1200</option>
+                    <option value="2400">2400</option>
+                    <option value="4800">4800</option>
+                    <option value="9600" selected>9600</option>
+                    <option value="19200">19200</option>
+                    <option value="38400">38400</option>
+                    <option value="57600">57600</option>
+                    <option value="115200">115200</option>
+                  </select>
+
+                    <label for="slaveAddressInput" style="margin-left: 10px;">Slave:</label>
+                    <input type="number" id="slaveAddressInput" value="1" min="1" max="247" style="width: 70px;">
+
+                </div>
+
+                <div style="text-align: center; margin-top: 10px;">
+                    <button id="sendConfigButton" class="onButton" style="padding: 6px 14px; font-size: 14px;">Send Config</button>
+                </div>
+
+                <p class="gray-label" style="text-align: center; margin-top: 5px;">
+                    Current setting: <strong>Baudrate <span id="currentBaud" style="color: #24af37;">--</span>, Slave <span id="currentSlave" style="color: #24af37;">--</span></strong>
+                </p>
+            </div>
+        </div>
+        <div class="card-grid">
+            <div class="card">
+                <h2>Real-time Tilt Angle</h2>
+                <p class="reading"><span id="valueContainer">NaN</span></p>
+                <p class="gray-label">Last reading: <span id="timestamp"></span></p>
+            </div>
+
+            <div class="card">
+                <h2>Sensor Zero Calibration</h2>
+                <button id="onButton" class="onButton">Relative ZERO</button>
+                <button id="offButton" class="offButton">Absolute ZERO</button>
+                <p class="gray-label">Last value sent: <span id="valueSent"></span></p>
+            </div>
+        </div>
+    </div>
+    <div class="footer">
+        <p><a href="">Created by Huy Ho</a></p>
+    </div>
+</body>
+<script>
+    const connectButton = document.getElementById('connectBleButton');
+    const disconnectButton = document.getElementById('disconnectBleButton');
+    const onButton = document.getElementById('onButton');
+    const offButton = document.getElementById('offButton');
+    const retrievedValue = document.getElementById('valueContainer');
+    const latestValueSent = document.getElementById('valueSent');
+    const bleStateContainer = document.getElementById('bleState');
+    const timestampContainer = document.getElementById('timestamp');
+    const sendConfigButton = document.getElementById('sendConfigButton');
+    const baudrateSelect = document.getElementById('baudrateSelect');
+    const slaveAddressInput = document.getElementById('slaveAddressInput');
+    const currentBaud = document.getElementById('currentBaud');
+    const currentSlave = document.getElementById('currentSlave');
+
+    // 🔵 Status message element
+    const statusMsg = document.createElement('p');
+    statusMsg.classList.add('gray-label');
+    statusMsg.style.textAlign = 'center';
+    statusMsg.style.marginTop = '5px';
+    sendConfigButton.parentElement.appendChild(statusMsg);
+
+    // UUID setup
+    const deviceName = 'ESP32';
+    const bleService = '19b10000-e8f2-537e-4f6c-d104768a1214';
+    const ledCharacteristicUUID = '19b10002-e8f2-537e-4f6c-d104768a1214';
+    const sensorCharacteristicUUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
+    const configCharacteristicUUID = '19b10003-e8f2-537e-4f6c-d104768a1214';
+
+    let bleServer = null;
+    let bleServiceFound = null;
+    let sensorCharacteristicFound = null;
+    let ledCharacteristicFound = null;
+    let configCharacteristicFound = null;
+
+    // Load saved config
+    window.addEventListener('load', () => {
+        const savedBaud = localStorage.getItem('baudrate');
+        const savedSlave = localStorage.getItem('slave');
+        if (savedBaud) baudrateSelect.value = savedBaud;
+        if (savedSlave) slaveAddressInput.value = savedSlave;
+    });
+
+    connectButton.addEventListener('click', connectToDevice);
+    disconnectButton.addEventListener('click', disconnectDevice);
+    onButton.addEventListener('click', () => writeLedValue(1));
+    offButton.addEventListener('click', () => writeLedValue(0));
+
+    sendConfigButton.addEventListener('click', sendConfig);
+
+    function sendConfig() {
+        const baudrate = baudrateSelect.value;
+        const slave = slaveAddressInput.value.trim();
+
+        if (!slave) {
+            alert("Please enter the slave address.");
+            return;
+        }
+
+        const configString = `B${baudrate},S${slave}`;
+        console.log("Sending config:", configString);
+
+        // Save to localStorage
+        localStorage.setItem('baudrate', baudrate);
+        localStorage.setItem('slave', slave);
+
+        if (configCharacteristicFound) {
+            const encoder = new TextEncoder();
+            configCharacteristicFound.writeValue(encoder.encode(configString))
+                .then(() => {
+                    currentBaud.innerText = baudrate;
+                    currentSlave.innerText = slave;
+                    showStatus("✅ Config sent successfully", "green");
+                    console.log("Config sent!");
+                })
+                .catch(err => {
+                    console.error("Error sending config:", err);
+                    showStatus("❌ Failed to send config", "red");
+                });
+        } else {
+            showStatus("❌ Bluetooth not connected", "red");
+        }
+    }
+
+    function connectToDevice() {
+        navigator.bluetooth.requestDevice({
+                filters: [{
+                    name: deviceName
+                }],
+                optionalServices: [bleService]
+            })
+            .then(device => {
+                bleStateContainer.innerText = `Connecting to ${device.name}...`;
+                bleStateContainer.style.color = "#888";
+                device.addEventListener('gattservicedisconnected', onDisconnected);
+                return device.gatt.connect();
+            })
+            .then(server => {
+                bleServer = server;
+                return server.getPrimaryService(bleService);
+            })
+            .then(service => {
+                bleServiceFound = service;
+                return Promise.all([
+                    service.getCharacteristic(sensorCharacteristicUUID),
+                    service.getCharacteristic(ledCharacteristicUUID),
+                    service.getCharacteristic(configCharacteristicUUID)
+                ]);
+            })
+            .then(characteristics => {
+                [sensorCharacteristicFound, ledCharacteristicFound, configCharacteristicFound] = characteristics;
+
+                sensorCharacteristicFound.addEventListener('characteristicvaluechanged', handleCharacteristicChange);
+                sensorCharacteristicFound.startNotifications();
+                return sensorCharacteristicFound.readValue();
+            })
+            .then(value => {
+                const decodedValue = new TextDecoder().decode(value);
+                retrievedValue.innerText = decodedValue;
+                bleStateContainer.innerText = "Connected to ESP32";
+                bleStateContainer.style.color = "#24af37";
+
+                // Auto-send config after connect
+                sendConfig();
+            })
+            .catch(error => {
+                console.error("Connection error:", error);
+                bleStateContainer.innerText = "Disconnected";
+                bleStateContainer.style.color = "#d13a30";
+            });
+    }
+
+    function writeLedValue(value) {
+        if (!ledCharacteristicFound) {
+            alert("LED characteristic not found.");
+            return;
+        }
+        ledCharacteristicFound.writeValue(new Uint8Array([value]))
+            .then(() => {
+                latestValueSent.innerText = value;
+            })
+            .catch(err => {
+                console.error("Write failed:", err);
+                alert("Failed to write LED value.");
+            });
+    }
+
+    function disconnectDevice() {
+        if (sensorCharacteristicFound) {
+            sensorCharacteristicFound.stopNotifications().catch(() => {});
+        }
+        if (bleServer && bleServer.connected) {
+            bleServer.disconnect();
+        }
+        bleStateContainer.innerText = "Device Disconnected";
+        bleStateContainer.style.color = "#d13a30";
+    }
+
+    function onDisconnected() {
+        bleStateContainer.innerText = "Device disconnected";
+        bleStateContainer.style.color = "#d13a30";
+    }
+
+    function handleCharacteristicChange(event) {
+        const newValue = new TextDecoder().decode(event.target.value);
+        retrievedValue.innerText = newValue;
+        timestampContainer.innerText = getDateTime();
+    }
+
+    function getDateTime() {
+        const d = new Date();
+        return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+    }
+
+    function showStatus(msg, color) {
+        statusMsg.innerText = msg;
+        statusMsg.style.color = color;
+    }
+</script>
+
+
+
+
+</html>
